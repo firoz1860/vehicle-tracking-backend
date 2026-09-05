@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tracking
+      POSTGRES_USER: tracking
+      POSTGRES_PASSWORD: tracking
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracking -d tracking"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  api:
+    build: .
+    environment:
+      TRACKING_DATABASE_URL: postgresql+psycopg://tracking:tracking@db:5432/tracking
+      TRACKING_JWT_SECRET: local-development-secret-change-for-production
+      TRACKING_GPS_INGEST_API_KEY: local-ingest-key
+      TRACKING_MQTT_HOST: mqtt
+      TRACKING_CORS_ORIGINS: "*"
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+  simulator:
+    build: ./docker/simulator
+    environment:
+      MQTT_HOST: mqtt
+    depends_on:
+      - mqtt
+
+volumes:
+  postgres_data:
