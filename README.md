@@ -1,65 +1,195 @@
 # Vehicle Tracking Backend
 
-FastAPI service for an authenticated bus-tracking application. It consumes GPS events through MQTT, stores historical locations in PostgreSQL, and exposes only the route and vehicle assigned to the authenticated user.
+Production-style FastAPI backend for a GPS-based bus tracking system. It securely authenticates riders, enforces one route and vehicle assignment per user, stores incoming GPS updates in PostgreSQL, and serves current and historical tracking data to the Flutter application.
 
-## Quick start
+## Live Links
+
+* API: https://vehicle-tracking-backend-ylqw.onrender.com
+* Interactive API documentation: https://vehicle-tracking-backend-ylqw.onrender.com/docs
+* Live Flutter application: https://eloquent-moxie-380c44.netlify.app
+* Flutter repository: https://github.com/firoz1860/vehicle-tracking-flutter
+
+## Features
+
+* JWT-based authentication for multiple users
+* PostgreSQL database hosted on Neon
+* One backend-enforced route and vehicle assignment per user
+* MQTT GPS ingestion support
+* API-key-protected REST GPS ingestion fallback
+* Current vehicle location and historical GPS records
+* Protected route, vehicle, location, and history APIs
+* Clean modular FastAPI architecture
+* Docker Compose setup with PostgreSQL, MQTT broker, API, and GPS simulator
+* Input validation, CORS configuration, health endpoint, and automated backend tests
+
+## System Architecture
+
+```text
+GPS Device / Simulator
+        |
+        | MQTT or protected REST request
+        v
+FastAPI Backend on Render
+        |
+        v
+Neon PostgreSQL Database
+        |
+        v
+Flutter Tracking Application on Netlify
+```
+
+## GPS Data Flow
+
+```text
+Vehicle GPS update
+  -> FastAPI validates the request
+  -> GPS record is added to gps_locations
+  -> latest latitude, longitude, speed, time, and status update in vehicles
+  -> Flutter app loads the assigned vehicle dashboard
+```
+
+## Technology Stack
+
+| Layer             | Technology                    |
+| ----------------- | ----------------------------- |
+| Backend           | Python, FastAPI               |
+| Database          | PostgreSQL, SQLAlchemy        |
+| Authentication    | JWT Bearer Token              |
+| Password security | Salted scrypt password hashes |
+| GPS ingestion     | MQTT and REST API             |
+| Deployment        | Render                        |
+| Database hosting  | Neon PostgreSQL               |
+| API documentation | Swagger / OpenAPI             |
+
+## Demo Accounts
+
+| User    | Email                 | Password      | Assigned route | Assigned vehicle |
+| ------- | --------------------- | ------------- | -------------- | ---------------- |
+| Rider A | `rider.a@example.com` | `Password123` | Campus Express | BUS-001          |
+| Rider B | `rider.b@example.com` | `Password123` | City Connector | BUS-002          |
+
+## Authorization Logic
+
+The backend, not the Flutter client, controls assignment access.
+
+1. The user logs in and receives a JWT.
+2. Every protected request reads the authenticated user from the JWT.
+3. The backend finds that user's `user_assignments` record.
+4. The backend returns only the route and vehicle assigned to that user.
+5. The client never sends a route ID or vehicle ID when requesting dashboard data.
+
+This prevents Rider A from viewing BUS-002 and prevents Rider B from viewing BUS-001.
+
+## Database Design
+
+| Table              | Purpose                                                           |
+| ------------------ | ----------------------------------------------------------------- |
+| `users`            | Rider accounts, email, password hash, active status               |
+| `routes`           | Route code, route name, origin, destination, map coordinates      |
+| `vehicles`         | Bus number, model, current status, latest GPS values              |
+| `user_assignments` | One route and vehicle mapping for each user                       |
+| `gps_locations`    | Historical latitude, longitude, speed, vehicle ID, and timestamps |
+
+`gps_locations` is indexed by vehicle and recorded time for efficient tracking-history queries.
+
+## API Endpoints
+
+| Method | Endpoint                                        | Authentication | Purpose                                      |
+| ------ | ----------------------------------------------- | -------------- | -------------------------------------------- |
+| `POST` | `/api/v1/auth/login`                            | No             | Log in and receive JWT                       |
+| `GET`  | `/api/v1/me/dashboard`                          | JWT            | Assigned route, vehicle, and latest location |
+| `GET`  | `/api/v1/me/route`                              | JWT            | Assigned route                               |
+| `GET`  | `/api/v1/me/vehicle`                            | JWT            | Assigned vehicle                             |
+| `GET`  | `/api/v1/me/location`                           | JWT            | Latest GPS location                          |
+| `GET`  | `/api/v1/me/history`                            | JWT            | Historical GPS locations                     |
+| `POST` | `/api/v1/ingest/vehicles/{vehicle_id}/location` | API key        | Store a GPS update                           |
+| `GET`  | `/health`                                       | No             | Health check                                 |
+
+## Example GPS Ingestion Request
+
+Use the Swagger documentation or send a protected request:
 
 ```bash
-cp .env.example .env
+curl -X POST "https://vehicle-tracking-backend-ylqw.onrender.com/api/v1/ingest/vehicles/2/location" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_GPS_INGEST_API_KEY" \
+  -d '{
+    "latitude": 28.6500,
+    "longitude": 77.2350,
+    "speed": 22,
+    "recorded_at": "2026-09-05T16:00:00Z"
+  }'
+```
+
+A successful GPS update is stored in PostgreSQL and updates the assigned vehicle's latest location, speed, and moving/stopped status.
+
+## Environment Variables
+
+| Variable                      | Required | Description                                 |
+| ----------------------------- | -------- | ------------------------------------------- |
+| `TRACKING_DATABASE_URL`       | Yes      | Neon PostgreSQL connection string           |
+| `TRACKING_JWT_SECRET`         | Yes      | Long private secret used to sign JWT tokens |
+| `TRACKING_GPS_INGEST_API_KEY` | Yes      | Secret required by GPS REST ingestion       |
+| `TRACKING_CORS_ORIGINS`       | Yes      | Allowed frontend URL                        |
+| `TRACKING_MQTT_HOST`          | Optional | MQTT broker host                            |
+| `TRACKING_MQTT_PORT`          | Optional | MQTT broker port                            |
+
+Never commit actual secrets to GitHub.
+
+## Run Locally with Docker
+
+```bash
 docker compose up --build
 ```
 
-The API is available at `http://localhost:8000`, with interactive OpenAPI docs at `/docs`. The first API container start creates the schema and demo data. The simulator publishes fresh positions every eight seconds.
+This starts:
 
-### Demo accounts
+* PostgreSQL database
+* Mosquitto MQTT broker
+* FastAPI backend
+* GPS simulator publishing coordinates every eight seconds
 
-| Email | Password | Assigned route | Assigned vehicle |
-| --- | --- | --- | --- |
-| `rider.a@example.com` | `Password123` | Campus Express / ROUTE-A | BUS-001 |
-| `rider.b@example.com` | `Password123` | City Connector / ROUTE-B | BUS-002 |
+Open Swagger documentation at:
 
-## Architecture and GPS flow
-
-`GPS simulator -> MQTT vehicles/{vehicle_id}/location -> FastAPI MQTT subscriber -> gps_locations + vehicle latest state -> protected FastAPI APIs -> Flutter`
-
-`POST /api/v1/ingest/vehicles/{vehicle_id}/location` is an API-key-protected REST fallback for devices/integrations that cannot publish MQTT.
-
-## Database design
-
-- `users`: email, salted scrypt password hash, active status
-- `routes`: code, name, endpoints and ordered map coordinates
-- `vehicles`: route relationship plus denormalized latest location/status
-- `user_assignments`: one unique assignment per user, linking that user to one route and vehicle
-- `gps_locations`: append-only timestamped latitude, longitude, speed, vehicle records
-
-The GPS table is indexed on `(vehicle_id, recorded_at)`. User assignments use foreign-key restrictions for route/vehicle integrity and cascade deletion only from user to assignment.
-
-## Authentication and authorization
-
-Login returns an expiring JWT. Protected endpoints resolve the user from the token, then resolve only that user's assignment. No endpoint accepts a vehicle ID or route ID from the mobile client for viewing data. The assignment service also verifies the assigned vehicle belongs to the assigned route; a manipulated client can never switch BUS-001 to BUS-002.
-
-## API endpoints
-
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| POST | `/api/v1/auth/login` | Login and return JWT |
-| GET | `/api/v1/me/dashboard` | Assigned route, vehicle and current location |
-| GET | `/api/v1/me/route` | Assigned route |
-| GET | `/api/v1/me/vehicle` | Assigned vehicle |
-| GET | `/api/v1/me/location` | Current vehicle location |
-| GET | `/api/v1/me/history?page=1&page_size=20` | Assigned vehicle's location history |
-| POST | `/api/v1/ingest/vehicles/{vehicle_id}/location` | API-key-protected GPS fallback |
-| GET | `/health` | Liveness endpoint |
-
-For local REST ingestion send `X-API-Key: local-ingest-key` and a JSON payload such as `{"latitude":28.71,"longitude":77.11,"speed":24,"recorded_at":"2026-09-05T10:00:00Z"}`.
-
-## Local development and tests
-
-```bash
-python -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest -v
-.venv/bin/ruff check app tests
+```text
+http://localhost:8000/docs
 ```
 
-For production, replace all development secrets, turn off anonymous MQTT, use TLS/database backups, and run Alembic migrations instead of `create_all`.
+## Run Tests
+
+```bash
+pip install -e ".[dev]"
+pytest -v
+ruff check app tests
+```
+
+## Database Evidence
+
+The following screenshots prove that PostgreSQL stores routes, vehicle assignments, latest vehicle state, and historical GPS data.
+
+### GPS History Stored in `gps_locations`
+
+<!-- In GitHub edit mode, drag the gps_locations screenshot here. -->
+
+### Route Records Stored in `routes`
+
+<!-- In GitHub edit mode, drag the routes screenshot here. -->
+
+### Backend-Enforced Mapping in `user_assignments`
+
+<!-- In GitHub edit mode, drag the user_assignments screenshot here. -->
+
+### Latest Vehicle State in `vehicles`
+
+<!-- In GitHub edit mode, drag the vehicles screenshot here. -->
+
+## Assessment Coverage
+
+* Multiple authenticated users: complete
+* PostgreSQL data storage: complete
+* One route and vehicle per user: complete
+* Backend authorization: complete
+* MQTT and REST GPS ingestion: complete
+* Latest and historical GPS records: complete
+* Flutter API support: complete
+* Docker Compose and GPS simulator bonus: complete
